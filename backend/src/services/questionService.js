@@ -193,6 +193,29 @@ function getQuestionTypeMix(numQuestions) {
   return types.slice(0, numQuestions)
 }
 
+// Generate question types from provided mix percentages
+function generateFromMix(questionTypeMix, numQuestions) {
+  const { MCQ = 50, TF = 30, MSQ = 20 } = questionTypeMix
+  const total = MCQ + TF + MSQ
+  
+  const mcqCount = Math.round((MCQ / total) * numQuestions)
+  const tfCount = Math.round((TF / total) * numQuestions)
+  const msqCount = numQuestions - mcqCount - tfCount
+  
+  const types = []
+  for (let i = 0; i < mcqCount; i++) types.push('MCQ')
+  for (let i = 0; i < tfCount; i++) types.push('TF')
+  for (let i = 0; i < msqCount; i++) types.push('MSQ')
+  
+  // Shuffle to mix them up nicely
+  for (let i = types.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [types[i], types[j]] = [types[j], types[i]]
+  }
+  
+  return types.slice(0, numQuestions)
+}
+
 // Build prompt for question generation
 function buildQuestionPrompt(transcript, questionTypes, difficulty) {
   const typeInstructions = questionTypes.map((type, index) => {
@@ -461,13 +484,16 @@ async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
 
 // Main question generation function
 export async function generateQuestions(transcript, cfg) {
-  const { numQuestions = 2, difficulty = 'medium', provider = 'minimax' } = cfg || {}
+  const { numQuestions = 2, difficulty = 'medium', provider = 'minimax', questionTypeMix = null } = cfg || {}
 
   if (!transcript || transcript.trim().length === 0) {
     throw new Error('Transcript is required')
   }
 
-  const questionTypes = getQuestionTypeMix(numQuestions)
+  // Use provided questionTypeMix or generate default based on numQuestions
+  const questionTypes = questionTypeMix 
+    ? generateFromMix(questionTypeMix, numQuestions)
+    : getQuestionTypeMix(numQuestions)
   const prompt = buildQuestionPrompt(transcript, questionTypes, difficulty)
 
   console.log(`Generating ${numQuestions} questions with ${provider}...`)

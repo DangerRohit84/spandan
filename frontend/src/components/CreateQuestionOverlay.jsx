@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 
 function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' }) {
   const [questionType, setQuestionType] = useState(defaultType)
@@ -11,6 +11,11 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
   ])
   const [timeToAnswer, setTimeToAnswer] = useState(30)
   const [points, setPoints] = useState(100)
+
+  // Launched state - once teacher launches, show timer mode
+  const [isLaunched, setIsLaunched] = useState(false)
+  const [launchedTimeLeft, setLaunchedTimeLeft] = useState(0)
+  const launchedTimerRef = useRef(null)
 
   if (!isOpen) return null
 
@@ -92,6 +97,7 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
       return
     }
 
+    // First, emit the question to students via onLaunch
     onLaunch({
       type: questionType,
       question: question.trim(),
@@ -102,6 +108,33 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
       points
     })
 
+    // Start launched timer - question is now live
+    setIsLaunched(true)
+    setLaunchedTimeLeft(timeToAnswer)
+    
+    launchedTimerRef.current = setInterval(() => {
+      setLaunchedTimeLeft(prev => {
+        if (prev <= 1) {
+          clearInterval(launchedTimerRef.current)
+          launchedTimerRef.current = null
+          // Auto-close when timer hits 0
+          setTimeout(() => {
+            handleCloseAndReset()
+          }, 500)
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+  }
+
+  const handleCloseAndReset = () => {
+    if (launchedTimerRef.current) {
+      clearInterval(launchedTimerRef.current)
+      launchedTimerRef.current = null
+    }
+    setIsLaunched(false)
+    setLaunchedTimeLeft(0)
     // Reset form
     setQuestion('')
     setOptions([
@@ -113,6 +146,14 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
     setTimeToAnswer(30)
     setPoints(100)
     onClose()
+  }
+
+  const handleManualClose = () => {
+    if (launchedTimerRef.current) {
+      clearInterval(launchedTimerRef.current)
+      launchedTimerRef.current = null
+    }
+    handleCloseAndReset()
   }
 
   const getOptionLabel = (index) => String.fromCharCode(65 + index)
@@ -149,11 +190,33 @@ function CreateQuestionOverlay({ isOpen, onClose, onLaunch, defaultType = 'MCQ' 
           paddingBottom: '16px',
           borderBottom: '1px solid var(--border-color)'
         }}>
-          <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '600', color: '#3b82f6' }}>
-            ✍️ Create Question
-          </h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '600', color: '#3b82f6' }}>
+              ✍️ Create Question
+            </h2>
+            {isLaunched && (
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '6px 14px',
+                borderRadius: '20px',
+                background: launchedTimeLeft <= 5 ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                border: `2px solid ${launchedTimeLeft <= 5 ? '#ef4444' : '#10b981'}`
+              }}>
+                <span style={{ fontSize: '14px', color: launchedTimeLeft <= 5 ? '#ef4444' : '#10b981', fontWeight: '600' }}>
+                  {launchedTimeLeft <= 5 ? '⏱️ TIME! ' : '⏱️ ' }{launchedTimeLeft}s
+                </span>
+                {launchedTimeLeft <= 5 && (
+                  <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '600', animation: 'pulse 0.5s infinite' }}>
+                    LEFT
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
           <button
-            onClick={onClose}
+            onClick={isLaunched ? handleManualClose : onClose}
             style={{
               background: 'transparent',
               border: 'none',

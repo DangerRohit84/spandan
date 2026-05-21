@@ -31,7 +31,8 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
     const { 
       numQuestions = 2, 
       difficulty = 'medium',
-      provider = 'minimax'
+      provider = 'minimax',
+      questionTypeMix = null
     } = config || {}
 
     if (!transcript || transcript.trim().length === 0) {
@@ -46,7 +47,8 @@ router.post('/generate', authorize('teacher'), async (req, res) => {
     const questions = await generateQuestions(transcript, {
       numQuestions,
       difficulty,
-      provider
+      provider,
+      questionTypeMix
     })
 
     console.log(`Generated ${questions.length} questions successfully`)

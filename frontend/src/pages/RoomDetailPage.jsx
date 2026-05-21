@@ -7,7 +7,9 @@ import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
 import QuestionApprovalPopup from '../components/QuestionApprovalPopup'
+import TextQuestionApprovalPopup from '../components/TextQuestionApprovalPopup'
 import CreateQuestionOverlay from '../components/CreateQuestionOverlay'
+import TextToQuestionsPopup from '../components/TextToQuestionsPopup'
 import RoomSettingsModal from '../components/RoomSettingsModal'
 import Leaderboard from '../components/Leaderboard'
 import { saveTranscript } from '../services/transcriptService'
@@ -49,6 +51,11 @@ function RoomDetailPage() {
   const [segmentTimeLeft, setSegmentTimeLeft] = useState(0)
   const segmentTimerRef = useRef(null)
 
+  // Question timer for teacher visibility
+  const [activeQuestion, setActiveQuestion] = useState(null)
+  const [questionTimeLeft, setQuestionTimeLeft] = useState(0)
+  const questionTimerRef = useRef(null)
+
 
   // Question generation
   const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false)
@@ -56,6 +63,11 @@ function RoomDetailPage() {
   const [showQuestionPopup, setShowQuestionPopup] = useState(false)
   const [isPopupOpen, setIsPopupOpen] = useState(false)
   const [showCreateQuestion, setShowCreateQuestion] = useState(false)
+  const [showTextToQuestions, setShowTextToQuestions] = useState(false)
+  const [isGeneratingFromText, setIsGeneratingFromText] = useState(false)
+  const [showTextQuestionPopup, setShowTextQuestionPopup] = useState(false)
+  const [showGeneratingPopup, setShowGeneratingPopup] = useState(false)
+  const [pendingTextQuestions, setPendingTextQuestions] = useState([])
   const [generatedQuestions, setGeneratedQuestions] = useState([])
   // Segment pause/resume state
   const [isSegmentPaused, setIsSegmentPaused] = useState(false)
@@ -134,6 +146,48 @@ function RoomDetailPage() {
     socket.on('response:new', handleNewResponse)
     return () => socket.off('response:new', handleNewResponse)
   }, [socket])
+
+  // Listen for question launch events to show timer to teacher
+  useEffect(() => {
+    if (!socket) return
+    
+  const startQuestionTimer = (question) => {
+    const timeToAnswer = question.timeToAnswer || roomSettings.timeToAnswer || 30
+    
+    // Clear any existing timer
+    if (questionTimerRef.current) {
+      clearInterval(questionTimerRef.current)
+      questionTimerRef.current = null
+    }
+    
+    setActiveQuestion(question)
+    setQuestionTimeLeft(timeToAnswer)
+    
+    questionTimerRef.current = setInterval(() => {
+      setQuestionTimeLeft(prev => {
+        if (prev <= 1) {
+          clearInterval(questionTimerRef.current)
+          questionTimerRef.current = null
+          setActiveQuestion(null)
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+  }
+
+  const handleQuestionLaunched = (data) => {
+    console.log('[QUESTION LAUNCHED]', data)
+  }
+    
+    socket.on('new_question', handleQuestionLaunched)
+    socket.on('question:started', handleQuestionLaunched)
+    
+    return () => {
+      socket.off('new_question', handleQuestionLaunched)
+      socket.off('question:started', handleQuestionLaunched)
+    }
+  }, [socket, roomSettings.timeToAnswer])
 
   // Auto-scroll transcription
   useEffect(() => {
@@ -353,6 +407,58 @@ function RoomDetailPage() {
         reject(error)
       })
     })
+  }
+
+  // Handle question generation from pasted text (TextToQuestionsPopup)
+  const handleTextToQuestionsGenerate = async (text, mode) => {
+    setShowTextToQuestions(false) // Close the text popup
+    setShowGeneratingPopup(true)  // Show generating popup
+    setIsGeneratingFromText(true)
+    
+    try {
+      const typeMix = mode === 'TF'
+        ? { MCQ: 0, TF: 100, MSQ: 0 }
+        : (roomSettings.questionTypeMix || { MCQ: 50, TF: 30, MSQ: 20 })
+      
+      const response = await fetch('/api/questions/generate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          transcript: text,
+          config: {
+            numQuestions: roomSettings.questionsPerSegment,
+            difficulty: roomSettings.difficulty,
+            provider: roomSettings.questionProvider || 'minimax',
+            questionTypeMix: typeMix
+          }
+        })
+      })
+      
+      const data = await response.json()
+      setIsGeneratingFromText(false)
+      setShowGeneratingPopup(false) // Close generating popup
+      
+      if (data.success && data.questions && data.questions.length > 0) {
+        const markedQuestions = data.questions.map(q => ({
+          ...q,
+          timeToAnswer: roomSettings.timeToAnswer,
+          points: roomSettings.points,
+          segmentIndex: currentSegment
+        }))
+        setPendingTextQuestions(markedQuestions)
+        setShowTextQuestionPopup(true)
+      } else {
+        window.alert(data.error || 'Failed to generate questions. Please try again.')
+      }
+    } catch (error) {
+      setIsGeneratingFromText(false)
+      setShowGeneratingPopup(false) // Close generating popup
+      console.error('Text to questions error:', error)
+      window.alert('Failed to generate questions. Please try again.')
+    }
   }
 
   const loadRoom = async () => {
@@ -592,7 +698,7 @@ function RoomDetailPage() {
         setGeneratedQuestions(prev => [data.question, ...prev])
         
         // Emit to students via socket
-        if (socket && isConnected && isRoomJoined) {
+        if (socket && isConnected) {
           socket.emit('new_question', {
             roomCode: room.code,
             question: data.question
@@ -606,6 +712,53 @@ function RoomDetailPage() {
 
   const handleRejectQuestion = (question) => {
     console.log('Question rejected:', question.question)
+  }
+
+  // Handle approve from TextQuestionApprovalPopup (text-based questions)
+  const handleTextQuestionApprove = async (question) => {
+    try {
+      const response = await fetch('/api/questions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          roomId: room._id,
+          type: question.type,
+          question: question.question,
+          options: question.options,
+          explanation: question.explanation,
+          segmentIndex: question.segmentIndex,
+          timeToAnswer: question.timeToAnswer || roomSettings.timeToAnswer || 30,
+          points: question.points || roomSettings.points || 100,
+          status: 'approved'
+        })
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        setGeneratedQuestions(prev => [data.question, ...prev])
+        
+        if (socket && isConnected) {
+          socket.emit('new_question', {
+            roomCode: room.code,
+            question: data.question
+          })
+        }
+      }
+    } catch (error) {
+      console.error('Failed to save text question:', error)
+    }
+  }
+
+  const handleTextQuestionReject = (question) => {
+    console.log('Text question rejected:', question.question)
+  }
+
+  const handleTextQuestionClose = () => {
+    setShowTextQuestionPopup(false)
+    setPendingTextQuestions([])
   }
 
   const handleCreateQuestion = async (questionData) => {
@@ -634,24 +787,14 @@ function RoomDetailPage() {
         // Emit to socket for students to receive (include roomCode)
         console.log('Emitting new_question event:', { roomCode: room.code, question: data.question })
         console.log('Socket connected:', !!socket, 'isConnected:', isConnected, 'isRoomJoined:', isRoomJoined)
-        if (socket && isConnected && isRoomJoined) {
+        if (socket && isConnected) {
           socket.emit('new_question', {
             roomCode: room.code,
             question: data.question
           })
           console.log('new_question event emitted successfully')
         } else {
-          console.error('Socket not available, not connected, or room not joined:', { socket: !!socket, isConnected, isRoomJoined })
-          // Retry after a short delay if room not yet joined
-          setTimeout(() => {
-            if (socket && isConnected) {
-              socket.emit('new_question', {
-                roomCode: room.code,
-                question: data.question
-              })
-              console.log('new_question event emitted after retry')
-            }
-          }, 1000)
+          console.error('Socket not available or not connected:', { socket: !!socket, isConnected })
         }
       } else {
         const errorData = await response.json()
@@ -809,6 +952,73 @@ function RoomDetailPage() {
                   {formatTime(segmentTimeLeft)}
                 </span>
               </div>
+            )}
+
+            {/* Question Timer Display - Shows when a question is active */}
+            {activeQuestion && questionTimeLeft > 0 && (
+              <div style={{
+                padding: '8px 16px',
+                background: questionTimeLeft <= 5 ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.1)',
+                borderRadius: '8px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                border: `2px solid ${questionTimeLeft <= 5 ? '#ef4444' : '#10b981'}`
+              }}>
+                <span style={{ fontSize: '14px', color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', fontWeight: '600' }}>
+                  ⏱️ Answer
+                </span>
+                <span style={{ 
+                  fontSize: '20px', 
+                  color: questionTimeLeft <= 5 ? '#ef4444' : '#10b981', 
+                  fontWeight: '700',
+                  animation: questionTimeLeft <= 5 ? 'pulse 0.5s infinite' : 'none'
+                }}>
+                  {questionTimeLeft}s
+                </span>
+                {questionTimeLeft <= 5 && (
+                  <span style={{ fontSize: '12px', color: '#ef4444', fontWeight: '600' }}>
+                    TIME!
+                  </span>
+                )}
+              </div>
+            )}
+            {activeQuestion && questionTimeLeft === 0 && (
+              <div style={{
+                padding: '8px 16px',
+                background: 'rgba(239, 68, 68, 0.1)',
+                borderRadius: '8px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                border: '2px solid #ef4444'
+              }}>
+                <span style={{ fontSize: '14px', color: '#ef4444', fontWeight: '600' }}>
+                  ⏱️ Time's Up!
+                </span>
+              </div>
+            )}
+
+            {/* Paste & Generate Button */}
+            {!isEnded && (
+              <button 
+                onClick={() => setShowTextToQuestions(true)} 
+                style={{
+                  padding: '8px 16px',
+                  background: '#10b981',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                📝 Paste & Generate
+              </button>
             )}
 
             {/* Create Question Button */}
@@ -1328,6 +1538,72 @@ function RoomDetailPage() {
         />
       )}
 
+      {/* Text to Questions Popup */}
+      {showTextToQuestions && (
+        <TextToQuestionsPopup
+          isOpen={showTextToQuestions}
+          onClose={() => setShowTextToQuestions(false)}
+          onGenerate={handleTextToQuestionsGenerate}
+          roomSettings={roomSettings}
+          isGenerating={isGeneratingFromText}
+        />
+      )}
+
+      {/* Generating Questions Popup */}
+      {showGeneratingPopup && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 3000
+        }}>
+          <div style={{
+            background: 'var(--bg-card)',
+            borderRadius: '20px',
+            padding: '32px',
+            textAlign: 'center',
+            minWidth: '280px',
+            boxShadow: '0 25px 80px rgba(0,0,0,0.4)',
+            border: '1px solid var(--border-color)'
+          }}>
+            <div style={{ 
+              fontSize: '48px', 
+              marginBottom: '16px',
+              animation: 'spin 1s linear infinite'
+            }}>⏳</div>
+            <h3 style={{ 
+              margin: '0 0 8px', 
+              color: 'var(--text-primary)',
+              fontSize: '18px',
+              fontWeight: '600'
+            }}>Generating Questions...</h3>
+            <p style={{ 
+              margin: 0, 
+              color: 'var(--text-secondary)', 
+              fontSize: '14px' 
+            }}>Please wait while AI creates your questions</p>
+          </div>
+        </div>
+      )}
+
+      {/* Text Question Approval Popup (for pasted text questions) */}
+      {showTextQuestionPopup && pendingTextQuestions.length > 0 && (
+        <TextQuestionApprovalPopup
+          questions={pendingTextQuestions}
+          onApprove={handleTextQuestionApprove}
+          onReject={handleTextQuestionReject}
+          onClose={handleTextQuestionClose}
+          onNext={handleTextQuestionClose}
+          isLast={true}
+        />
+      )}
+
       <style>{`
         @keyframes blink {
           0%, 100% { opacity: 1; }
@@ -1336,6 +1612,10 @@ function RoomDetailPage() {
         @keyframes spin {
           0% { transform: rotate(0deg); }
           100% { transform: rotate(360deg); }
+        }
+        @keyframes pulse {
+          0%, 100% { transform: scale(1); }
+          50% { transform: scale(1.1); }
         }
       `}</style>
     </div>
