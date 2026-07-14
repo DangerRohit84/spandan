@@ -26,20 +26,25 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://
 
 // Request timeout middleware - defined BEFORE use due to hoisting
 const requestTimeout = (req, res, next) => {
-  // Set a 30-second timeout for all requests
-  req.setTimeout(30000, () => {
+  // Question generation calls an LLM synchronously; for long transcripts (e.g. a
+  // 10- or 30-minute session) that can take minutes, so those routes get a much
+  // longer timeout. Everything else keeps the tight 30s cap.
+  const isGeneration = req.path.startsWith('/api/questions/generate')
+  const timeoutMs = isGeneration ? 300000 : 30000 // 5 min for generation, 30s otherwise
+
+  req.setTimeout(timeoutMs, () => {
     if (!res.headersSent) {
       res.status(504).json({ error: 'Request timeout', message: 'The request took too long to process' })
     }
   })
-  
+
   // Also set server-side timeout for the response
-  res.setTimeout(30000, () => {
+  res.setTimeout(timeoutMs, () => {
     if (!res.headersSent) {
       res.status(504).json({ error: 'Response timeout', message: 'The response took too long to generate' })
     }
   })
-  
+
   next()
 }
 
@@ -323,7 +328,12 @@ const connectDB = async () => {
     
     await mongoose.connect(mongoUri, {
       serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000
+      socketTimeoutMS: 45000,
+      // Ceiling on concurrent in-flight queries. Default is 100; a live event with
+      // hundreds of students bursting responses/leaderboard reads can exhaust it and
+      // queue requests until they time out. Size to the Mongo server's capacity.
+      maxPoolSize: Number(process.env.MONGO_MAX_POOL_SIZE) || 200,
+      minPoolSize: Number(process.env.MONGO_MIN_POOL_SIZE) || 10
     })
     
     console.log('MongoDB connected successfully')
