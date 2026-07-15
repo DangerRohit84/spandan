@@ -15,6 +15,16 @@ function QuestionApprovalPopup({ questions, onApprove, onReject, onClose, onComp
     setCurrentIndex(0)
   }, [questions])
 
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
+      }
+    }
+  }, [])
+
   // Start the countdown timer for a launched question
   const startTimer = (questionIndex) => {
     if (timerRef.current) {
