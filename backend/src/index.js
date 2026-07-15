@@ -371,7 +371,7 @@ function getActualParticipantCount(roomCode) {
 // Socket.IO — Unlimited single-room handling
 // ============================================
 
-const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
+const SOCKET_JWT_SECRET = process.env.JWT_SECRET || 'dev-only-insecure-fallback-do-not-use-in-production'
 
 // Phase 2B — resolve identity for a socket from a JWT and attach it to socket.data, so every
 // handler trusts SERVER-derived identity (userId/role) instead of client-supplied fields.
