@@ -185,8 +185,9 @@ function StudentRoomPage() {
     // question pushed WHILE we were briefly disconnected would have been missed. Re-pull the
     // room's questions so any missed one surfaces without the student manually refreshing.
     const handleReconnect = () => {
-      if (room?._id && user?._id) {
-        fetchPastResponses(room._id, user._id)
+      const r = roomRef.current
+      if (r?._id && user?._id) {
+        fetchPastResponses(r._id, user._id)
       }
     }
 
